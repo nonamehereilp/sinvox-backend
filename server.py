@@ -52,7 +52,9 @@ class TaskSubmitRequest(BaseModel):
     text: str
     voice_ref: str
     speed: Optional[float] = 0.9
+    volume: Optional[int] = 100
     client_id: str
+    mood: Optional[str] = 'neutral'
 
 class TaskSubmitResponse(BaseModel):
     task_id: str
@@ -66,13 +68,14 @@ class WorkCompleteRequest(BaseModel):
     task_id: str
     worker_id: str
     audio_url: str
+    status: str = "completed" 
 
 class WorkPingRequest(BaseModel):
     task_id: str
     worker_id: str
 
 class ResultResponse(BaseModel):
-    status: str  # "pending", "processing", "completed", "not_found"
+    status: str  # "pending", "processing", "completed", "not_found", "error"
     audio_url: Optional[str] = None
 
 # ========== Helper Functions ==========
@@ -90,6 +93,18 @@ def update_task_last_seen(task_id: str, client_id: str) -> bool:
     return False
 
 # ========== Endpoints ==========
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the TTS Task Queue Server"}
+
+@app.get("/status")
+async def status():
+    return {
+        "queue_size": len(task_queue),
+        "active_tasks": len(active_tasks),
+        "completed_tasks": len(results),
+    }
+
 @app.post("/submit", response_model=TaskSubmitResponse)
 async def submit_task(request: TaskSubmitRequest):
     """Client submits a new task."""
@@ -99,7 +114,9 @@ async def submit_task(request: TaskSubmitRequest):
         "id": task_id,
         "text": request.text,
         "voice_ref": request.voice_ref,
+        "mood": request.mood,
         "speed": request.speed,
+        "volume": request.volume,
         "client_id": request.client_id,
         "submitted_at": now,
         "last_seen": now
@@ -125,6 +142,7 @@ async def claim_task(worker_id: str):
         "id": task["id"],
         "text": task["text"],
         "voice_ref": task["voice_ref"],
+        "mood": task["mood"],
         "speed": task["speed"],
         "client_id": task["client_id"],
         "worker_id": worker_id,
@@ -136,8 +154,10 @@ async def claim_task(worker_id: str):
     return ClaimResponse(has_work=True, task={
         "id": task["id"],
         "text": task["text"],
+        "mood": task["mood"],
         "speed": task["speed"],
-        "voice_ref": task["voice_ref"]
+        "volume" : task["volume"],
+        "voice_ref": task["voice_ref"],
     })
 
 @app.post("/work/ping")
@@ -164,10 +184,11 @@ async def work_complete(request: WorkCompleteRequest):
     results[request.task_id] = {
         "audio_url": request.audio_url,
         "client_id": task["client_id"],
-        "completed_at": time.time()
+        "completed_at": time.time(),
+        "status": request.status
     }
     
-    return {"status": "success", "message": "Result stored"}
+    return {"status": "complete", "message": "Result stored"}
 
 @app.post("/work/upload/{task_id}")
 async def upload_audio(task_id: str, worker_id: str, file: UploadFile = File(...)):
@@ -207,8 +228,8 @@ async def get_result(task_id: str, client_id: str):
     # Check if completed
     if task_id in results:
         return ResultResponse(
-            status="completed",
-            audio_url=results[task_id]["audio_url"]
+            status=results[task_id].get("status", "completed"),
+            audio_url=results[task_id]["audio_url"],
         )
     
     # Check if in active tasks
